@@ -1,0 +1,28 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Private teaching material and generated artifacts
+private_data/
+uploads/
+exports/
+*.db
+*.sqlite*
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Editors and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

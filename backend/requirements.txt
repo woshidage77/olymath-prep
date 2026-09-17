@@ -1,0 +1,10 @@
+fastapi==0.116.1
+pydantic==2.11.7
+pytest==8.4.1
+httpx==0.28.1
+langchain-core==1.6.3
+langgraph==1.2.11
+uvicorn[standard]==0.35.0
+pillow==12.3.0
+python-multipart==0.0.32
+openai==2.43.0
