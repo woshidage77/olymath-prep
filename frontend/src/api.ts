@@ -1,6 +1,11 @@
 import type {
+  AfterClassFeedback,
+  AdjustmentRequest,
+  AdjustmentResponse,
   ChatMessage,
   CurriculumCatalog,
+  FeedbackPayload,
+  FeedbackSummary,
   LessonBrief,
   LessonDraft,
   LessonDraftSummary,
@@ -69,36 +74,59 @@ export async function getModelStatus(): Promise<ModelStatus> {
   return response.json() as Promise<ModelStatus>
 }
 
-export async function createAiLessonPlan(problemId: string, searchQuery: string | null): Promise<LessonPlan> {
+export async function createAiLessonPlan(problemId: string, searchQuery: string | null, teacherRequest: string): Promise<LessonPlan> {
   const response = await fetch('/api/ai/lesson-plan', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ problem_id: problemId, search_query: searchQuery }),
+    body: JSON.stringify({ problem_id: problemId, search_query: searchQuery, teacher_request: teacherRequest }),
   })
   if (!response.ok) throw await apiError(response, '智能分析失败')
   return response.json() as Promise<LessonPlan>
 }
 
+export async function requestStageAdjustment(request: AdjustmentRequest): Promise<AdjustmentResponse> {
+  const response = await fetch('/api/ai/adjust-stage', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  })
+  if (!response.ok) throw await apiError(response, '生成调整建议失败')
+  return response.json() as Promise<AdjustmentResponse>
+}
+
 export async function askTeacherAssistant(
-  problemId: string,
+  plan: LessonPlan,
   message: string,
   history: ChatMessage[],
 ): Promise<string> {
   const response = await fetch('/api/ai/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ problem_id: problemId, message, history }),
+    body: JSON.stringify({
+      problem_id: plan.selected_problem.id,
+      message,
+      history,
+      analysis: plan.model_analysis,
+    }),
   })
   if (!response.ok) throw await apiError(response, '智能助教回答失败')
   const payload = await response.json() as { answer: string }
   return payload.answer
 }
 
-export async function createDraft(problemId: string, relatedIds: string[]): Promise<LessonDraft> {
+export async function createDraft(
+  problemId: string,
+  relatedIds: string[],
+  planSnapshot: LessonPlan,
+): Promise<LessonDraft> {
   const response = await fetch('/api/drafts', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ starting_problem_id: problemId, related_problem_ids: relatedIds }),
+    body: JSON.stringify({
+      starting_problem_id: problemId,
+      related_problem_ids: relatedIds,
+      plan_snapshot: planSnapshot,
+    }),
   })
   if (!response.ok) throw await apiError(response, '保存备课草稿失败')
   return response.json() as Promise<LessonDraft>
@@ -194,4 +222,74 @@ export async function searchPhoto(id: string, grade: number): Promise<SearchResu
 export async function deletePhoto(id: string): Promise<void> {
   const response = await fetch(`/api/photos/${encodeURIComponent(id)}`, { method: 'DELETE' })
   if (!response.ok) throw await apiError(response, '删除拍照记录失败')
+}
+
+export function photoContentUrl(id: string): string {
+  return `/api/photos/${encodeURIComponent(id)}/content`
+}
+
+export async function createFeedback(payload: FeedbackPayload): Promise<AfterClassFeedback> {
+  const response = await fetch('/api/feedback', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) throw await apiError(response, '创建课后反馈失败')
+  return response.json() as Promise<AfterClassFeedback>
+}
+
+export async function listFeedback(): Promise<FeedbackSummary[]> {
+  const response = await fetch('/api/feedback')
+  if (!response.ok) throw await apiError(response, '读取课后反馈失败')
+  return response.json() as Promise<FeedbackSummary[]>
+}
+
+export async function getFeedback(id: string): Promise<AfterClassFeedback> {
+  const response = await fetch(`/api/feedback/${encodeURIComponent(id)}`)
+  if (!response.ok) throw await apiError(response, '读取课后反馈失败')
+  return response.json() as Promise<AfterClassFeedback>
+}
+
+export async function updateFeedback(feedback: AfterClassFeedback): Promise<AfterClassFeedback> {
+  const response = await fetch(`/api/feedback/${encodeURIComponent(feedback.id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      expected_version: feedback.version,
+      student_name: feedback.student_name,
+      grade: feedback.grade,
+      topic: feedback.topic,
+      lesson_date: feedback.lesson_date,
+      actual_content: feedback.actual_content,
+      observations: feedback.observations,
+      teacher_advice: feedback.teacher_advice,
+      homework: feedback.homework,
+      class_reminder: feedback.class_reminder,
+      photo_ids: feedback.photo_ids,
+    }),
+  })
+  if (!response.ok) throw await apiError(response, '保存课后反馈失败')
+  return response.json() as Promise<AfterClassFeedback>
+}
+
+export async function reviewFeedback(
+  feedback: AfterClassFeedback,
+  status: 'draft' | 'approved',
+): Promise<AfterClassFeedback> {
+  const response = await fetch(`/api/feedback/${encodeURIComponent(feedback.id)}/review`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expected_version: feedback.version, status }),
+  })
+  if (!response.ok) throw await apiError(response, '更新反馈状态失败')
+  return response.json() as Promise<AfterClassFeedback>
+}
+
+export async function deleteFeedback(id: string): Promise<void> {
+  const response = await fetch(`/api/feedback/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  if (!response.ok) throw await apiError(response, '删除课后反馈失败')
+}
+
+export function exportFeedbackUrl(id: string, audience: 'individual' | 'class_group'): string {
+  return `/api/feedback/${encodeURIComponent(id)}/export?audience=${audience}`
 }

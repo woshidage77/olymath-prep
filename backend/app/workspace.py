@@ -12,17 +12,22 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 from .catalog import ProblemNotFoundError, get_problem_source, problem_summary
 from .models import (
+    AfterClassFeedback,
+    CreateFeedbackRequest,
     CreateDraftRequest,
     DraftItem,
     DraftItemUpdate,
+    FeedbackSummary,
     LessonDraft,
     LessonDraftSummary,
     PhotoRecord,
     PhotoSearchRequest,
     ReviewDraftRequest,
+    ReviewFeedbackRequest,
     SearchRequest,
     SearchResult,
     UpdateDraftRequest,
+    UpdateFeedbackRequest,
 )
 from .retrieval import search_question_bank
 from .service import build_lesson_plan
@@ -42,6 +47,10 @@ class StaleProblemRevisionError(RuntimeError):
     pass
 
 
+class PhotoInUseError(RuntimeError):
+    pass
+
+
 @lru_cache(maxsize=8)
 def _store_for_root(root: str) -> AppStore:
     return AppStore(Path(root))
@@ -58,11 +67,13 @@ def clear_store_cache() -> None:
 def create_draft(request: CreateDraftRequest, store: AppStore | None = None) -> LessonDraft:
     repository = store or get_store()
     source = get_problem_source(request.starting_problem_id)
-    plan = build_lesson_plan(LessonBrief(
-        grade=source["grade"],
-        topic=source["topic"],
-        starting_problem_id=source["id"],
+    plan = request.plan_snapshot or build_lesson_plan(LessonBrief(
+        grade=source["grade"], topic=source["topic"], starting_problem_id=source["id"]
     ))
+    if plan.selected_problem.id != source["id"]:
+        raise ValueError("plan snapshot does not match the starting problem")
+    if plan.brief.grade != source["grade"] or plan.brief.topic != source["topic"]:
+        raise ValueError("plan snapshot does not match the problem scope")
     relation_by_id = {
         related.problem.id: related.relation
         for related in plan.related_problems
@@ -75,12 +86,20 @@ def create_draft(request: CreateDraftRequest, store: AppStore | None = None) -> 
         )
         for position, problem_id in enumerate(problem_ids)
     ]
+    first_item = items[0]
+    first_item["teacher_prompt"] = "\n".join(
+        stage.teacher_prompt for stage in plan.stages
+    )
+    first_item["teaching_note"] = "\n".join(
+        f"{stage.title}：{stage.teaching_note}" for stage in plan.stages
+    )
     title = request.title or f"{source['unit_name']} · {source['title']}"
     raw = repository.create_draft(
         title=title,
         grade=source["grade"],
         topic=source["topic"],
         items=items,
+        plan_snapshot=plan.model_dump(mode="json"),
     )
     return _lesson_draft(raw)
 
@@ -254,8 +273,156 @@ def search_from_photo(
 
 
 def delete_photo(photo_id: str, store: AppStore | None = None) -> None:
-    path = (store or get_store()).delete_photo(photo_id)
+    repository = store or get_store()
+    if repository.photo_is_used(photo_id):
+        raise PhotoInUseError("图片已用于课后反馈，请先从反馈中移除")
+    path = repository.delete_photo(photo_id)
     path.unlink(missing_ok=True)
+
+
+def photo_content_path(photo_id: str, store: AppStore | None = None) -> Path:
+    repository = store or get_store()
+    photo = repository.get_photo(photo_id)
+    path = repository.safe_child("uploads", photo["stored_name"])
+    if not path.is_file():
+        raise RecordNotFoundError(f"photo content not found: {photo_id}")
+    return path
+
+
+def create_feedback(
+    request: CreateFeedbackRequest, store: AppStore | None = None
+) -> AfterClassFeedback:
+    repository = store or get_store()
+    _validate_feedback_photos(request.photo_ids, repository)
+    raw = repository.create_feedback(request.model_dump(mode="json"))
+    return _after_class_feedback(raw, repository)
+
+
+def list_feedback(store: AppStore | None = None) -> list[FeedbackSummary]:
+    return [
+        FeedbackSummary.model_validate(item)
+        for item in (store or get_store()).list_feedback()
+    ]
+
+
+def get_feedback(
+    feedback_id: str, store: AppStore | None = None
+) -> AfterClassFeedback:
+    repository = store or get_store()
+    return _after_class_feedback(repository.get_feedback(feedback_id), repository)
+
+
+def update_feedback(
+    feedback_id: str,
+    request: UpdateFeedbackRequest,
+    store: AppStore | None = None,
+) -> AfterClassFeedback:
+    repository = store or get_store()
+    _validate_feedback_photos(request.photo_ids, repository)
+    payload = request.model_dump(mode="json", exclude={"expected_version"})
+    raw = repository.update_feedback(feedback_id, request.expected_version, payload)
+    return _after_class_feedback(raw, repository)
+
+
+def review_feedback(
+    feedback_id: str,
+    request: ReviewFeedbackRequest,
+    store: AppStore | None = None,
+) -> AfterClassFeedback:
+    repository = store or get_store()
+    raw = repository.review_feedback(
+        feedback_id, request.expected_version, request.status
+    )
+    return _after_class_feedback(raw, repository)
+
+
+def delete_feedback(feedback_id: str, store: AppStore | None = None) -> None:
+    (store or get_store()).delete_feedback(feedback_id)
+
+
+def export_feedback_markdown(feedback: AfterClassFeedback, audience: str) -> str:
+    if audience == "individual":
+        return f"# {feedback.student_name}同学课后反馈\n\n{feedback.individual_report}\n"
+    if audience == "class_group":
+        return f"# 班群课堂反馈\n\n{feedback.class_group_report}\n"
+    raise ValueError("audience must be individual or class_group")
+
+
+def _validate_feedback_photos(photo_ids: list[str], repository: AppStore) -> None:
+    for photo_id in photo_ids:
+        repository.get_photo(photo_id)
+
+
+def _after_class_feedback(raw: dict, repository: AppStore) -> AfterClassFeedback:
+    photos = [_photo_record(repository.get_photo(photo_id)) for photo_id in raw["photo_ids"]]
+    ordinary_individual, ordinary_group = _render_feedback_reports(raw, photos)
+    individual, class_group = ordinary_individual, ordinary_group
+    from .feedback_ai import render_polish
+    reports = raw.get("ai_reports", {})
+    if "individual" in reports:
+        individual = render_polish({**raw, "photo_names": [photo.original_name for photo in photos]}, "individual", reports["individual"])
+    if "class_group" in reports:
+        class_group = render_polish(raw, "class_group", reports["class_group"])
+    return AfterClassFeedback.model_validate({
+        **raw,
+        "photos": photos,
+        "ai_audiences": list(reports),
+        "ordinary_individual_report": ordinary_individual,
+        "ordinary_class_group_report": ordinary_group,
+        "individual_report": individual,
+        "class_group_report": class_group,
+    })
+
+
+def _render_feedback_reports(
+    raw: dict, photos: list[PhotoRecord]
+) -> tuple[str, str]:
+    performance_labels = {
+        "independent": "独立完成",
+        "prompted": "提示后完成",
+        "not_yet": "暂未完成",
+        "not_observed": "本节未观察",
+    }
+    observation_lines: list[str] = []
+    for observation in raw["observations"]:
+        evidence = observation["task_evidence"].rstrip("。；;！!？?")
+        line = (
+            f"- {observation['skill_area']}：{evidence}；"
+            f"完成情况：{performance_labels[observation['performance']]}"
+        )
+        if observation["correction_result"]:
+            correction = observation["correction_result"].rstrip("。；;！!？?")
+            line += f"；订正记录：{correction}"
+        observation_lines.append(line + "。")
+    photo_lines = [f"- {photo.original_name}" for photo in photos] or ["- 本次未上传课堂作业图片。"]
+    homework_lines = [f"{index}. {item}" for index, item in enumerate(raw["homework"], 1)]
+    individual = "\n".join([
+        f"日期：{raw['lesson_date']}　年级：{raw['grade']}年级　课题：{raw['topic']}",
+        "",
+        "【课堂主要内容】",
+        raw["actual_content"],
+        "",
+        "【课堂表现】",
+        *observation_lines,
+        "",
+        "【老师建议】",
+        raw["teacher_advice"],
+        "",
+        "【课堂作业展示】",
+        *photo_lines,
+        "",
+        "【课后作业】",
+        *homework_lines,
+    ])
+    class_lines = [
+        "家长们好！跟大家反馈本次上课情况：",
+        "",
+        f"📖【学习内容】{raw['topic']}",
+        raw["actual_content"],
+    ]
+    if raw["class_reminder"]:
+        class_lines.extend(["", f"【共同提醒】{raw['class_reminder']}"])
+    return individual, "\n".join(class_lines)
 
 
 def _draft_item_payload(source: dict, *, relation: str) -> dict:
@@ -321,3 +488,4 @@ def _safe_original_name(filename: str | None) -> str:
     name = Path(filename or "upload").name
     cleaned = "".join(character for character in name if character.isprintable()).strip()
     return (cleaned or "upload")[:120]
+    FeedbackSummary,

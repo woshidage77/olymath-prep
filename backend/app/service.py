@@ -21,8 +21,8 @@ class WorkflowExecutionError(RuntimeError):
         self.code = code
 
 
-def build_lesson_plan(brief: LessonBrief, *, use_model: bool = False) -> LessonPlan:
-    state = run_lesson_workflow(brief.model_dump(mode="json"), use_model=use_model)
+def build_lesson_plan(brief: LessonBrief, *, use_model: bool = False, teacher_request: str = "") -> LessonPlan:
+    state = run_lesson_workflow(brief.model_dump(mode="json"), use_model=use_model, teacher_request=teacher_request)
     if state["status"] == "no_candidate":
         raise ProblemNotFoundError(brief.starting_problem_id)
     if state["status"] != "waiting_teacher_review":

@@ -5,8 +5,12 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Lock
 from typing import Any, Iterator
 from uuid import uuid4
+
+
+_MIGRATION_LOCK = Lock()
 
 
 class RecordNotFoundError(LookupError):
@@ -35,7 +39,8 @@ class AppStore:
         self.upload_root = self.safe_child("uploads")
         self.upload_root.mkdir(parents=True, exist_ok=True)
         self.database_path = self.safe_child("yiduo.db")
-        self._migrate()
+        with _MIGRATION_LOCK:
+            self._migrate()
 
     def safe_child(self, *parts: str) -> Path:
         candidate = self.root.joinpath(*parts).resolve()
@@ -71,7 +76,7 @@ class AppStore:
             if 1 not in applied:
                 connection.executescript(
                     """
-                    CREATE TABLE lesson_drafts (
+                    CREATE TABLE IF NOT EXISTS lesson_drafts (
                         id TEXT PRIMARY KEY,
                         title TEXT NOT NULL,
                         grade INTEGER NOT NULL,
@@ -82,7 +87,7 @@ class AppStore:
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL
                     );
-                    CREATE TABLE lesson_draft_items (
+                    CREATE TABLE IF NOT EXISTS lesson_draft_items (
                         id TEXT PRIMARY KEY,
                         draft_id TEXT NOT NULL REFERENCES lesson_drafts(id) ON DELETE CASCADE,
                         position INTEGER NOT NULL CHECK(position >= 0),
@@ -95,8 +100,8 @@ class AppStore:
                         UNIQUE(draft_id, position),
                         UNIQUE(draft_id, problem_id)
                     );
-                    CREATE INDEX idx_draft_items_draft ON lesson_draft_items(draft_id, position);
-                    CREATE TABLE photo_records (
+                    CREATE INDEX IF NOT EXISTS idx_draft_items_draft ON lesson_draft_items(draft_id, position);
+                    CREATE TABLE IF NOT EXISTS photo_records (
                         id TEXT PRIMARY KEY,
                         original_name TEXT NOT NULL,
                         stored_name TEXT NOT NULL UNIQUE,
@@ -113,9 +118,95 @@ class AppStore:
                     """
                 )
                 connection.execute(
-                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                    "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                     (1, utc_now()),
                 )
+            if 2 not in applied:
+                connection.execute(
+                    "ALTER TABLE lesson_drafts ADD COLUMN plan_snapshot_json TEXT"
+                )
+                connection.execute(
+                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                    (2, utc_now()),
+                )
+            if 3 not in applied:
+                connection.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS after_class_feedback (
+                        id TEXT PRIMARY KEY,
+                        student_name TEXT NOT NULL,
+                        grade INTEGER NOT NULL,
+                        topic TEXT NOT NULL,
+                        lesson_date TEXT NOT NULL,
+                        actual_content TEXT NOT NULL,
+                        observations_json TEXT NOT NULL,
+                        teacher_advice TEXT NOT NULL,
+                        homework_json TEXT NOT NULL,
+                        class_reminder TEXT NOT NULL DEFAULT '',
+                        photo_ids_json TEXT NOT NULL DEFAULT '[]',
+                        status TEXT NOT NULL CHECK(status IN ('draft', 'approved')),
+                        version INTEGER NOT NULL CHECK(version >= 1),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_feedback_updated ON after_class_feedback(updated_at DESC);
+                    """
+                )
+                connection.execute(
+                    "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                    (3, utc_now()),
+                )
+
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS feedback_ai_proposals ("
+                "id TEXT PRIMARY KEY, feedback_id TEXT NOT NULL REFERENCES after_class_feedback(id) ON DELETE CASCADE, "
+                "source_version INTEGER NOT NULL, audience TEXT NOT NULL, body_json TEXT NOT NULL, accepted INTEGER NOT NULL)"
+            )
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_feedback_ai ON feedback_ai_proposals(feedback_id, accepted)")
+
+    def save_feedback_proposal(self, feedback_id, expected_version, audience, body):
+        proposal_id = str(uuid4())
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._feedback_version(connection, feedback_id, expected_version)
+            connection.execute(
+                "INSERT INTO feedback_ai_proposals VALUES (?, ?, ?, ?, ?, 0)",
+                (proposal_id, feedback_id, expected_version, audience, json.dumps(body, ensure_ascii=False)),
+            )
+        return proposal_id
+
+    @staticmethod
+    def _feedback_version(connection, feedback_id, expected_version):
+        row = connection.execute("SELECT version FROM after_class_feedback WHERE id = ?", (feedback_id,)).fetchone()
+        if row is None:
+            raise RecordNotFoundError("feedback not found")
+        if row["version"] != expected_version:
+            raise VersionConflictError("课堂记录已变化，请重新打开后再操作。")
+
+    def adopt_feedback_proposal(self, feedback_id, expected_version, proposal_id, audience):
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._feedback_version(connection, feedback_id, expected_version)
+            if proposal_id is not None:
+                row = connection.execute(
+                    "SELECT * FROM feedback_ai_proposals WHERE id = ? AND feedback_id = ? AND audience = ?",
+                    (proposal_id, feedback_id, audience),
+                ).fetchone()
+                if row is None:
+                    raise RecordNotFoundError("润色建议不存在")
+                if row["source_version"] != expected_version or row["accepted"]:
+                    raise VersionConflictError("润色建议已过期，请重新生成。")
+            connection.execute(
+                "DELETE FROM feedback_ai_proposals WHERE feedback_id = ? AND audience = ? AND accepted = 1",
+                (feedback_id, audience),
+            )
+            if proposal_id is not None:
+                connection.execute("UPDATE feedback_ai_proposals SET accepted = 1 WHERE id = ?", (proposal_id,))
+            connection.execute(
+                "UPDATE after_class_feedback SET status = 'draft', version = version + 1, updated_at = ? WHERE id = ?",
+                (utc_now(), feedback_id),
+            )
+        return self.get_feedback(feedback_id)
 
     def create_draft(
         self,
@@ -124,15 +215,25 @@ class AppStore:
         grade: int,
         topic: str,
         items: list[dict[str, Any]],
+        plan_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         draft_id = str(uuid4())
         now = utc_now()
         with self.connect() as connection:
             connection.execute(
                 "INSERT INTO lesson_drafts "
-                "(id, title, grade, topic, status, version, teacher_note, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, 'pending_review', 1, '', ?, ?)",
-                (draft_id, title, grade, topic, now, now),
+                "(id, title, grade, topic, status, version, teacher_note, created_at, updated_at, "
+                "plan_snapshot_json) VALUES (?, ?, ?, ?, 'pending_review', 1, '', ?, ?, ?)",
+                (
+                    draft_id,
+                    title,
+                    grade,
+                    topic,
+                    now,
+                    now,
+                    json.dumps(plan_snapshot, ensure_ascii=False, separators=(",", ":"))
+                    if plan_snapshot else None,
+                ),
             )
             self._replace_items(connection, draft_id, items, existing_ids=set())
         return self.get_draft(draft_id)
@@ -161,6 +262,10 @@ class AppStore:
                 (draft_id,),
             ).fetchall()
         result = dict(draft)
+        result["plan_snapshot"] = (
+            json.loads(result["plan_snapshot_json"])
+            if result.get("plan_snapshot_json") else None
+        )
         result["items"] = [
             {
                 **dict(item),
@@ -329,3 +434,128 @@ class AppStore:
             connection.execute("DELETE FROM photo_records WHERE id = ?", (photo_id,))
         path = self.safe_child("uploads", row["stored_name"])
         return path
+
+    def photo_is_used(self, photo_id: str) -> bool:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT photo_ids_json FROM after_class_feedback"
+            ).fetchall()
+        return any(photo_id in json.loads(row["photo_ids_json"]) for row in rows)
+
+    def create_feedback(self, payload: dict[str, Any]) -> dict[str, Any]:
+        feedback_id = str(uuid4())
+        now = utc_now()
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO after_class_feedback "
+                "(id, student_name, grade, topic, lesson_date, actual_content, observations_json, "
+                "teacher_advice, homework_json, class_reminder, photo_ids_json, status, version, "
+                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?)",
+                (
+                    feedback_id,
+                    payload["student_name"],
+                    payload["grade"],
+                    payload["topic"],
+                    payload["lesson_date"],
+                    payload["actual_content"],
+                    json.dumps(payload["observations"], ensure_ascii=False, separators=(",", ":")),
+                    payload["teacher_advice"],
+                    json.dumps(payload["homework"], ensure_ascii=False, separators=(",", ":")),
+                    payload["class_reminder"],
+                    json.dumps(payload["photo_ids"], ensure_ascii=False, separators=(",", ":")),
+                    now,
+                    now,
+                ),
+            )
+        return self.get_feedback(feedback_id)
+
+    def list_feedback(self) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT id, student_name, grade, topic, lesson_date, status, version, created_at, updated_at "
+                "FROM after_class_feedback ORDER BY updated_at DESC"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_feedback(self, feedback_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            connection.execute("BEGIN")
+            row = connection.execute(
+                "SELECT * FROM after_class_feedback WHERE id = ?", (feedback_id,)
+            ).fetchone()
+            reports = connection.execute(
+                "SELECT audience, body_json FROM feedback_ai_proposals WHERE feedback_id = ? AND accepted = 1",
+                (feedback_id,),
+            ).fetchall()
+        if row is None:
+            raise RecordNotFoundError(f"feedback not found: {feedback_id}")
+        result = dict(row)
+        result["observations"] = json.loads(result.pop("observations_json"))
+        result["homework"] = json.loads(result.pop("homework_json"))
+        result["photo_ids"] = json.loads(result.pop("photo_ids_json"))
+        result["ai_reports"] = {item["audience"]: json.loads(item["body_json"]) for item in reports}
+        return result
+
+    def update_feedback(
+        self,
+        feedback_id: str,
+        expected_version: int,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                "SELECT version FROM after_class_feedback WHERE id = ?", (feedback_id,)
+            ).fetchone()
+            if current is None:
+                raise RecordNotFoundError(f"feedback not found: {feedback_id}")
+            if current["version"] != expected_version:
+                raise VersionConflictError(
+                    f"feedback version changed: expected {expected_version}, current {current['version']}"
+                )
+            connection.execute(
+                "UPDATE after_class_feedback SET student_name = ?, grade = ?, topic = ?, lesson_date = ?, "
+                "actual_content = ?, observations_json = ?, teacher_advice = ?, homework_json = ?, "
+                "class_reminder = ?, photo_ids_json = ?, status = 'draft', version = version + 1, "
+                "updated_at = ? WHERE id = ?",
+                (
+                    payload["student_name"], payload["grade"], payload["topic"], payload["lesson_date"],
+                    payload["actual_content"],
+                    json.dumps(payload["observations"], ensure_ascii=False, separators=(",", ":")),
+                    payload["teacher_advice"],
+                    json.dumps(payload["homework"], ensure_ascii=False, separators=(",", ":")),
+                    payload["class_reminder"],
+                    json.dumps(payload["photo_ids"], ensure_ascii=False, separators=(",", ":")),
+                    utc_now(), feedback_id,
+                ),
+            )
+            connection.execute("DELETE FROM feedback_ai_proposals WHERE feedback_id = ?", (feedback_id,))
+        return self.get_feedback(feedback_id)
+
+    def review_feedback(
+        self, feedback_id: str, expected_version: int, status: str
+    ) -> dict[str, Any]:
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                "SELECT version FROM after_class_feedback WHERE id = ?", (feedback_id,)
+            ).fetchone()
+            if current is None:
+                raise RecordNotFoundError(f"feedback not found: {feedback_id}")
+            if current["version"] != expected_version:
+                raise VersionConflictError(
+                    f"feedback version changed: expected {expected_version}, current {current['version']}"
+                )
+            connection.execute(
+                "UPDATE after_class_feedback SET status = ?, version = version + 1, updated_at = ? "
+                "WHERE id = ?", (status, utc_now(), feedback_id)
+            )
+        return self.get_feedback(feedback_id)
+
+    def delete_feedback(self, feedback_id: str) -> None:
+        with self.connect() as connection:
+            result = connection.execute(
+                "DELETE FROM after_class_feedback WHERE id = ?", (feedback_id,)
+            )
+            if result.rowcount == 0:
+                raise RecordNotFoundError(f"feedback not found: {feedback_id}")

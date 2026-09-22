@@ -19,7 +19,41 @@ export interface ProjectionCell {
   depth: number
 }
 
+export interface TeachingStep {
+  teacher_question: string
+  student_action: string
+  checkpoint: string
+}
+
+export type AdjustmentGoal = 'start' | 'explain' | 'confusion' | 'challenge' | 'unsure' | 'custom'
+export type AdjustmentMethod = 'recommend' | 'visual' | 'hands_on' | 'discussion'
+export type AdjustmentStageId = 'read-problem' | 'understand-method' | 'return-to-problem'
+
+export interface AdjustmentProposal {
+  rationale: string
+  objective: string
+  steps: TeachingStep[]
+  teacher_check: string
+}
+
+export interface AdjustmentRequest {
+  problem_id: string
+  revision_id: string
+  stage_id: AdjustmentStageId
+  goal: AdjustmentGoal
+  method: AdjustmentMethod
+  note: string
+  current: Pick<Stage, 'purpose' | 'teacher_prompt' | 'teaching_note' | 'teaching_steps'>
+}
+
+export interface AdjustmentResponse {
+  problem_id: string
+  stage_id: AdjustmentStageId
+  proposal: AdjustmentProposal
+}
+
 export interface Stage {
+  teaching_steps: TeachingStep[]
   id: string
   problem_id: string
   phase: 'problem' | 'concept' | 'return'
@@ -111,22 +145,42 @@ export interface LessonPlan {
 }
 
 export interface ProblemAnalysis {
+  scope_note: string
   knowledge_points: string[]
+  knowledge_evidence: KnowledgeEvidence[]
   problem_type: string
   core_method: string
   prerequisites: string[]
+  skill_plans: SkillPlan[]
   difficulty_reasons: string[]
   common_mistakes: string[]
   teaching_objective: string
   opening_question: string
   scaffolding_questions: string[]
   variation_idea: string
+  teacher_confirmations: string[]
   review_warning: string
 }
 
+export interface KnowledgeEvidence {
+  knowledge_point: string
+  evidence: string
+  source_ids: string[]
+}
+
+export interface SkillPlan {
+  skill: string
+  observable_behavior: string
+  teaching_activity: string
+  success_criterion: string
+}
+
 export interface ModelStatus {
+  daily_limit: number
+  used: number
+  remaining: number
   configured: boolean
-  provider: 'openai'
+  provider: 'deepseek' | 'openai'
   model: string
 }
 
@@ -161,6 +215,7 @@ export interface LessonDraftSummary {
 export interface LessonDraft extends LessonDraftSummary {
   teacher_note: string
   items: DraftItem[]
+  plan_snapshot: LessonPlan | null
 }
 
 export interface PhotoRecord {
@@ -175,6 +230,49 @@ export interface PhotoRecord {
   transcript: string
   created_at: string
   updated_at: string
+}
+
+export type ObservationPerformance = 'independent' | 'prompted' | 'not_yet' | 'not_observed'
+
+export interface FeedbackObservation {
+  skill_area: string
+  task_evidence: string
+  performance: ObservationPerformance
+  correction_result: string
+}
+
+export interface FeedbackPayload {
+  student_name: string
+  grade: number
+  topic: string
+  lesson_date: string
+  actual_content: string
+  observations: FeedbackObservation[]
+  teacher_advice: string
+  homework: string[]
+  class_reminder: string
+  photo_ids: string[]
+}
+
+export interface FeedbackSummary {
+  id: string
+  student_name: string
+  grade: number
+  topic: string
+  lesson_date: string
+  status: 'draft' | 'approved'
+  version: number
+  created_at: string
+  updated_at: string
+}
+
+export interface AfterClassFeedback extends FeedbackSummary, FeedbackPayload {
+  photos: PhotoRecord[]
+  individual_report: string
+  class_group_report: string
+  ai_audiences: Array<'individual' | 'class_group'>
+  ordinary_individual_report: string
+  ordinary_class_group_report: string
 }
 
 export interface CurriculumUnit {

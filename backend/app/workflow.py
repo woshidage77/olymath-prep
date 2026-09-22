@@ -50,6 +50,7 @@ class WorkflowState(TypedDict, total=False):
     retrieval_context: list[dict[str, Any]]
     stages: list[dict[str, Any]]
     use_model: bool
+    teacher_request: str
     model_analysis: dict[str, Any]
 
 
@@ -137,7 +138,11 @@ def route_after_context(state: WorkflowState) -> Literal["analyze_problem", "pro
 
 def analyze_problem_node(state: WorkflowState) -> WorkflowState:
     try:
-        analysis = analyze_problem(state["problem_source"])
+        analysis = analyze_problem(
+            state["problem_source"],
+            state.get("retrieval_context", []),
+            **({"teacher_request": state["teacher_request"]} if state.get("teacher_request") else {}),
+        )
     except ModelNotConfiguredError as error:
         return {
             "status": "model_failed",
@@ -235,7 +240,13 @@ def draft_teaching_notes_node(state: WorkflowState) -> WorkflowState:
                 if analysis else source["teacher_prompt"]
             ),
             teaching_note=(
-                f"重点防错：{'；'.join(analysis.common_mistakes)}"
+                " ".join([
+                    f"重点防错：{'；'.join(analysis.common_mistakes)}",
+                    *[
+                        f"{skill.skill}：{skill.teaching_activity} 达成标准：{skill.success_criterion}"
+                        for skill in analysis.skill_plans
+                    ],
+                ])
                 if analysis else source["teaching_note"]
             ),
             cubes=cubes,
@@ -345,10 +356,11 @@ def build_workflow():
 lesson_workflow = build_workflow()
 
 
-def run_lesson_workflow(request: dict[str, Any], *, use_model: bool = False) -> WorkflowState:
+def run_lesson_workflow(request: dict[str, Any], *, use_model: bool = False, teacher_request: str = "") -> WorkflowState:
     return lesson_workflow.invoke({
         "request": request,
         "status": "received",
         "trace": [],
         "use_model": use_model,
+        "teacher_request": teacher_request,
     })

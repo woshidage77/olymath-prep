@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-const emit = defineEmits<{ enter: []; topic: [unitId: string]; destination: [mode: 'library' | 'drafts' | 'photo'] }>()
+const emit = defineEmits<{ guide: []; enter: []; topic: [unitId: string]; destination: [mode: 'library' | 'drafts' | 'photo' | 'feedback'] }>()
 const selected = ref(0)
 const examples = [
  { topic: '简易方程', title: '从年龄关系，讲清数量关系', question: '爸爸今年38岁，比小明年龄的3倍多2岁。小明今年多少岁？', tag: '年龄关系', formula: '3x + 2 = 38', concept: '先找到等量关系，再设未知数。', prompt: '“多2岁”对应的是谁的年龄？', answer: 'x = 12，小明今年12岁。', next: ['年龄和差', '年龄倍数'], unit: '第5单元' },
@@ -21,6 +21,14 @@ const current = computed(() => examples[selected.value]!)
         <div class="home-actions">
           <button class="home-primary" @click="emit('enter')">开始我的备课 <span aria-hidden="true">↗</span></button>
           <a class="home-text-link" href="#lesson-preview">看看如何备一节课 <span aria-hidden="true">↓</span></a>
+        </div>
+        <div class="hero-tools" aria-label="平台功能入口">
+          <span>快速进入</span>
+          <button @click="emit('guide')">使用指南 ↗</button>
+          <button @click="emit('destination', 'library')">题库备课</button>
+          <button @click="emit('destination', 'drafts')">我的备课</button>
+          <button @click="emit('destination', 'photo')">拍照录题</button>
+          <button @click="emit('destination', 'feedback')">课后反馈</button>
         </div>
         <div class="hero-footnote"><span class="tiny-book" aria-hidden="true">▤</span><span>从五年级数学起步</span><i></i><span>题目 · 概念 · 迁移</span></div>
       </div>
@@ -52,6 +60,7 @@ const current = computed(() => examples[selected.value]!)
       <button @click="emit('enter')"><span class="feature-index">01 / 选题</span><h3>先找到合适的起点 <span>↗</span></h3><p>按年级、专题与难度浏览。从基础例题出发，再安排巩固和挑战。</p><div class="mini-tags"><span>基础</span><span>进阶</span><span>挑战</span></div></button>
       <button @click="emit('destination', 'drafts')"><span class="feature-index">02 / 备课</span><h3>把题目串成教学思路 <span>↗</span></h3><p>组织题目顺序，补充课堂追问。保存自己的备课稿，下次继续完善。</p><div class="mini-sequence"><span>原题</span> → <span>概念</span> → <span>迁移</span></div></button>
       <button @click="emit('destination', 'photo')"><span class="feature-index">03 / 积累</span><h3>留住手边的好题 <span>↗</span></h3><p>上传单题照片，校对题干后检索相关题目，把零散材料带回备课流程。</p><div class="mini-tags"><span>照片录入</span><span>题干校对</span></div></button>
+      <button @click="emit('destination', 'feedback')"><span class="feature-index">04 / 反馈</span><h3>整理课后的真实表现 <span>↗</span></h3><p>记录课堂表现、订正情况和作业，把事实整理成个人反馈与班群通知。</p><div class="mini-tags"><span>课堂记录</span><span>家长反馈</span></div></button>
     </div>
   </section>
 
@@ -90,6 +99,10 @@ const current = computed(() => examples[selected.value]!)
 .home-primary:hover{background:#35664b;transform:translateY(-2px)}
 .home-text-link{font-size:13px;color:var(--ink);text-decoration:none;border:0;background:none;padding:10px 0;display:inline-flex;gap:16px;align-items:center}
 .home-text-link:hover{text-decoration:underline;text-underline-offset:5px}
+.hero-tools{display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin-top:28px}
+.hero-tools>span{margin-right:4px;color:#7b8677;font-size:10px;letter-spacing:.08em}
+.hero-tools button{border:1px solid #d5ded0;border-radius:999px;background:#f9faf6;color:#476154;padding:7px 11px;font-size:10px;transition:border-color .2s,background .2s}
+.hero-tools button:hover{border-color:#7e9971;background:#eef3e8}
 .hero-footnote{display:flex;align-items:center;gap:12px;color:#7b8677;font-size:11px;margin-top:40px}
 .hero-footnote i{width:3px;height:3px;background:#899680;border-radius:50%}
 .tiny-book{font-size:18px}
@@ -126,7 +139,7 @@ const current = computed(() => examples[selected.value]!)
 .home-site h2{letter-spacing:-.03em}
 .section-intro h2,.subjects-layout h2{font-size:32px;line-height:1.5;margin:0}
 .section-intro>p,.subjects-layout>div>p:not(.home-kicker){color:var(--muted);font-size:14px;line-height:1.9}
-.preparation-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:0;border-block:1px solid #dfe4d9}
+.preparation-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:0;border-block:1px solid #dfe4d9}
 .preparation-grid>button{text-align:left;border:0;background:transparent;padding:35px 32px;transition:background .2s;color:inherit}
 .preparation-grid>button:first-child{padding-left:0}
 .preparation-grid>button+button{border-left:1px solid #dfe4d9}
@@ -159,7 +172,7 @@ const current = computed(() => examples[selected.value]!)
 .home-footer small{font-size:10px;color:#a7b99b}
 .home-site :is(button,a,summary):focus-visible{outline:3px solid #b88c39;outline-offset:5px}
 @media(min-width:1800px){.hero-layout{min-height:800px}}
-@media(max-width:1000px){.hero-layout{gap:35px}.hero-editorial h1{font-size:46px}.home-actions{gap:12px}.preview-body{padding:20px}.subjects-layout,.home-faq{gap:40px}.subject-links>button{gap:13px}.subject-links small{display:none}.preparation-grid>button{padding:25px 20px}.preparation-grid h3{font-size:16px}}
+@media(max-width:1000px){.hero-layout{gap:35px}.hero-editorial h1{font-size:46px}.home-actions{gap:12px}.preview-body{padding:20px}.subjects-layout,.home-faq{gap:40px}.subject-links>button{gap:13px}.subject-links small{display:none}.preparation-grid{grid-template-columns:repeat(2,1fr)}.preparation-grid>button{padding:25px 20px}.preparation-grid>button:nth-child(3){border-left:0;border-top:1px solid #dfe4d9}.preparation-grid>button:nth-child(4){border-top:1px solid #dfe4d9}.preparation-grid h3{font-size:16px}}
 @media(max-width:720px){.home-shell{width:88%}.hero-layout{grid-template-columns:1fr;padding-block:48px;gap:42px;min-height:auto}.hero-editorial h1{font-size:clamp(38px,8.5vw,56px);line-height:1.3}.home-kicker{margin-bottom:20px;font-size:10px}.home-lead{font-size:14px;margin:23px 0}.hero-footnote{margin-top:25px}.lesson-preview{transform:none}.hero-bottom>span{max-width:65%;line-height:1.7}.home-preparation{padding-block:58px}.section-intro{display:block;margin-bottom:25px}.section-intro h2,.subjects-layout h2{font-size:26px}.section-intro>p{margin-top:20px;font-size:13px}.preparation-grid{grid-template-columns:1fr}.preparation-grid>button,.preparation-grid>button:first-child{padding:25px 0}.preparation-grid>button+button{border-left:0;border-top:1px solid #dfe4d9}.preparation-grid h3{margin-top:16px;font-size:18px}.mini-tags,.mini-sequence{margin-top:16px}.subjects-layout,.home-faq{grid-template-columns:1fr;gap:24px}.home-subjects,.home-faq{padding-block:52px}.subject-links small{display:block;font-size:9px}.subject-links strong{font-size:14px}.subject-links>button{gap:10px}.home-footer small{width:100%}}
 @media(prefers-reduced-motion:reduce){.home-site *{transition:none!important;scroll-behavior:auto!important}}
 </style>

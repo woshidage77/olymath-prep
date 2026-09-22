@@ -1,3 +1,4 @@
+from datetime import date
 from enum import StrEnum
 from typing import Literal
 
@@ -45,7 +46,21 @@ class ProjectionCell(BaseModel):
     depth: int = Field(ge=1)
 
 
+class TeachingStep(BaseModel):
+    teacher_question: str = Field(min_length=1, max_length=240)
+    student_action: str = Field(min_length=1, max_length=240)
+    checkpoint: str = Field(min_length=1, max_length=240)
+
+    @field_validator("teacher_question", "student_action", "checkpoint")
+    @classmethod
+    def require_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("teaching step cannot be blank")
+        return value.strip()
+
+
 class Stage(BaseModel):
+    teaching_steps: list[TeachingStep] = Field(default_factory=list, max_length=5)
     id: str
     problem_id: str
     phase: Literal["problem", "concept", "return"]
@@ -170,26 +185,47 @@ class LessonPlan(BaseModel):
 
 
 class ProblemAnalysis(BaseModel):
+    scope_note: str = Field(min_length=1, max_length=500)
     knowledge_points: list[str] = Field(min_length=1, max_length=6)
+    knowledge_evidence: list["KnowledgeEvidence"] = Field(min_length=1, max_length=8)
     problem_type: str = Field(min_length=1, max_length=80)
     core_method: str = Field(min_length=1, max_length=500)
     prerequisites: list[str] = Field(max_length=6)
+    skill_plans: list["SkillPlan"] = Field(min_length=1, max_length=6)
     difficulty_reasons: list[str] = Field(max_length=6)
     common_mistakes: list[str] = Field(max_length=6)
     teaching_objective: str = Field(min_length=1, max_length=500)
     opening_question: str = Field(min_length=1, max_length=500)
     scaffolding_questions: list[str] = Field(min_length=1, max_length=6)
     variation_idea: str = Field(min_length=1, max_length=500)
+    teacher_confirmations: list[str] = Field(max_length=6)
     review_warning: str = Field(min_length=1, max_length=300)
 
 
+class KnowledgeEvidence(BaseModel):
+    knowledge_point: str = Field(min_length=1, max_length=80)
+    evidence: str = Field(min_length=1, max_length=300)
+    source_ids: list[str] = Field(min_length=1, max_length=4)
+
+
+class SkillPlan(BaseModel):
+    skill: str = Field(min_length=1, max_length=80)
+    observable_behavior: str = Field(min_length=1, max_length=300)
+    teaching_activity: str = Field(min_length=1, max_length=500)
+    success_criterion: str = Field(min_length=1, max_length=300)
+
+
 class ModelStatus(BaseModel):
+    daily_limit: int = 0
+    used: int = 0
+    remaining: int = 0
     configured: bool
-    provider: Literal["openai"] = "openai"
+    provider: Literal["deepseek", "openai"]
     model: str
 
 
 class AIPlanRequest(BaseModel):
+    teacher_request: str = Field(default="", max_length=1000)
     problem_id: str = Field(min_length=3, max_length=80)
     search_query: str | None = Field(default=None, max_length=120)
 
@@ -211,6 +247,7 @@ class TeacherChatRequest(BaseModel):
     problem_id: str = Field(min_length=3, max_length=80)
     message: str = Field(min_length=1, max_length=2000)
     history: list[ChatMessage] = Field(default_factory=list, max_length=12)
+    analysis: ProblemAnalysis | None = None
 
     @field_validator("message")
     @classmethod
@@ -223,7 +260,7 @@ class TeacherChatRequest(BaseModel):
 
 class TeacherChatResponse(BaseModel):
     answer: str
-    provider: Literal["openai"] = "openai"
+    provider: Literal["deepseek", "openai"]
     model: str
 
 
@@ -231,6 +268,7 @@ class CreateDraftRequest(BaseModel):
     starting_problem_id: str = Field(min_length=3, max_length=80)
     related_problem_ids: list[str] = Field(default_factory=list, max_length=6)
     title: str | None = Field(default=None, max_length=120)
+    plan_snapshot: LessonPlan | None = None
 
     @field_validator("title")
     @classmethod
@@ -318,6 +356,7 @@ class LessonDraftSummary(BaseModel):
 class LessonDraft(LessonDraftSummary):
     teacher_note: str
     items: list[DraftItem]
+    plan_snapshot: LessonPlan | None = None
 
 
 class PhotoRecord(BaseModel):
@@ -350,3 +389,103 @@ class PhotoSearchRequest(BaseModel):
     grade: int = Field(default=5, ge=1, le=12)
     topic: str | None = Field(default=None, max_length=80)
     limit: int = Field(default=10, ge=1, le=20)
+
+
+class FeedbackObservation(BaseModel):
+    skill_area: str = Field(min_length=1, max_length=80)
+    task_evidence: str = Field(min_length=1, max_length=500)
+    performance: Literal["independent", "prompted", "not_yet", "not_observed"]
+    correction_result: str = Field(default="", max_length=500)
+
+    @field_validator("skill_area", "task_evidence")
+    @classmethod
+    def required_observation_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("observation text cannot be blank")
+        return normalized
+
+    @field_validator("correction_result")
+    @classmethod
+    def normalize_correction_result(cls, value: str) -> str:
+        return value.strip()
+
+
+class FeedbackContent(BaseModel):
+    student_name: str = Field(min_length=1, max_length=40)
+    grade: int = Field(ge=1, le=12)
+    topic: str = Field(min_length=1, max_length=80)
+    lesson_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    actual_content: str = Field(min_length=1, max_length=3000)
+    observations: list[FeedbackObservation] = Field(min_length=1, max_length=8)
+    teacher_advice: str = Field(min_length=1, max_length=2000)
+    homework: list[str] = Field(min_length=1, max_length=10)
+    class_reminder: str = Field(default="", max_length=1000)
+    photo_ids: list[str] = Field(default_factory=list, max_length=9)
+
+    @field_validator("student_name", "topic", "actual_content", "teacher_advice")
+    @classmethod
+    def required_feedback_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("feedback text cannot be blank")
+        return normalized
+
+    @field_validator("class_reminder")
+    @classmethod
+    def normalize_class_reminder(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("lesson_date")
+    @classmethod
+    def lesson_date_must_exist(cls, value: str) -> str:
+        date.fromisoformat(value)
+        return value
+
+    @field_validator("homework")
+    @classmethod
+    def normalize_homework(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value if item.strip()]
+        if not normalized:
+            raise ValueError("homework cannot be empty")
+        return normalized
+
+    @model_validator(mode="after")
+    def photo_ids_must_be_unique(self) -> "FeedbackContent":
+        if len(self.photo_ids) != len(set(self.photo_ids)):
+            raise ValueError("photo IDs must be unique")
+        return self
+
+
+class CreateFeedbackRequest(FeedbackContent):
+    pass
+
+
+class UpdateFeedbackRequest(FeedbackContent):
+    expected_version: int = Field(ge=1)
+
+
+class ReviewFeedbackRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+    status: Literal["draft", "approved"]
+
+
+class FeedbackSummary(BaseModel):
+    id: str
+    student_name: str
+    grade: int
+    topic: str
+    lesson_date: str
+    status: Literal["draft", "approved"]
+    version: int = Field(ge=1)
+    created_at: str
+    updated_at: str
+
+
+class AfterClassFeedback(FeedbackSummary, FeedbackContent):
+    photos: list[PhotoRecord]
+    individual_report: str
+    class_group_report: str
+    ai_audiences: list[str] = Field(default_factory=list)
+    ordinary_individual_report: str = ""
+    ordinary_class_group_report: str = ""
